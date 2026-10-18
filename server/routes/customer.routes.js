@@ -6,6 +6,7 @@ import {
   getMyKeys,
   newPresonalApiKey,
   revokeMyKey,
+  getMyTickets,
 } from "../controllers/customer.controller.js";
 
 import { checkNewTicketData } from "../middleware/data.middleware/ticketDataValidation.middleware.js";
@@ -39,6 +40,13 @@ customerRouter.delete(
   verifyAccessToken,
   isCustomerRole,
   revokeMyKey,
+);
+
+customerRouter.get(
+  "/customer/myTickets",
+  verifyAccessToken,
+  isCustomerRole,
+  getMyTickets,
 );
 
 export default customerRouter;

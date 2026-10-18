@@ -10,6 +10,8 @@ const CONFIRM_CLOSE_DELAY_MS = 200;
 const DEFAULT_RATE_LIMIT = 60;
 const LABEL_REGEX = /^[a-zA-Z0-9._\-\s]{2,100}$/;
 const USAGE_FIELDS = ["usagetoday", "usage", "requeststoday", "requestcount"];
+const FILTER_ORDER = ["active", "revoked"];
+const FILTER_LABELS = { active: "Active", revoked: "Revoked" };
 
 const $ = (id) => {
   const el = document.getElementById(id);
@@ -66,11 +68,151 @@ let revokeLastFocused = null;
 let revokeCloseTimer = null;
 let revokeBusy = false;
 
+let currentFilter = "active";
+let keysLoaded = false;
+let filterToken = 0;
+const filterButtons = {};
+
+const EMPTY_DEFAULT = {
+  title: emptyState?.querySelector(".empty-title")?.textContent ?? "",
+  text: emptyState?.querySelector(".empty-text")?.textContent ?? "",
+};
+
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 if (tableBody) tableBody.style.transition = `opacity ${FADE_MS}ms ease`;
 
+setupFilters();
 loadKeys();
+
+function setupFilters() {
+  if (!tableBody) return;
+
+  const anchor = tableBody.closest(".table-wrap") || tableBody.closest("table");
+  if (!anchor || !anchor.parentNode) return;
+
+  const style = document.createElement("style");
+  style.textContent = `
+    .key-filters {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      padding: 4px 32px 20px;
+    }
+    .key-filters .filter-pill {
+      padding: 10px 20px;
+      border: 0;
+      border-radius: 9999px;
+      background: var(--surface);
+      color: var(--ink);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      box-shadow: var(--raised-xs);
+      transition: box-shadow 160ms ease, color 160ms ease;
+    }
+    .key-filters .filter-pill:hover {
+      color: var(--ink-strong);
+    }
+    .key-filters .filter-pill:active {
+      box-shadow: var(--inset-sm);
+    }
+    .key-filters .filter-pill.active {
+      background: var(--blue);
+      color: #fff;
+      box-shadow: var(--raised-xs);
+    }
+    @media (max-width: 639px) {
+      .key-filters {
+        padding: 4px 22px 16px;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .key-filters .filter-pill {
+        transition: none;
+      }
+    }
+  `;
+  document.head.appendChild(style);
+
+  const bar = document.createElement("div");
+  bar.className = "key-filters";
+  bar.setAttribute("role", "group");
+  bar.setAttribute("aria-label", "Filter keys by status");
+
+  FILTER_ORDER.forEach((key) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "filter-pill";
+    btn.dataset.filter = key;
+    btn.addEventListener("click", () => setFilter(key));
+    filterButtons[key] = btn;
+    bar.appendChild(btn);
+  });
+
+  anchor.parentNode.insertBefore(bar, anchor);
+  updateFilterCounts();
+}
+
+function keyState(row) {
+  if (isRevokedValue(pick(row, "isrevoked"))) return "revoked";
+  const expiry = pick(row, "expiry");
+  if (expiry && new Date(expiry) < new Date()) return "expired";
+  return "active";
+}
+
+function matchesFilter(row, filter) {
+  const state = keyState(row);
+  return filter === "active" ? state === "active" : state !== "active";
+}
+
+function updateFilterCounts() {
+  FILTER_ORDER.forEach((key) => {
+    const btn = filterButtons[key];
+    if (!btn) return;
+    const count = keysCache.filter((row) => matchesFilter(row, key)).length;
+    const isActive = key === currentFilter;
+    btn.textContent = keysLoaded
+      ? `${FILTER_LABELS[key]} · ${count}`
+      : FILTER_LABELS[key];
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-pressed", String(isActive));
+  });
+}
+
+async function setFilter(next) {
+  if (next === currentFilter) return;
+  currentFilter = next;
+  updateFilterCounts();
+
+  if (!keysLoaded) return;
+
+  const token = ++filterToken;
+  fadeTable(false);
+  await wait(FADE_MS);
+  if (token !== filterToken) return;
+  renderRows(keysCache);
+  fadeTable(true);
+}
+
+function setEmptyCopy(totalKeys) {
+  const title = emptyState?.querySelector(".empty-title");
+  const text = emptyState?.querySelector(".empty-text");
+  if (!title || !text) return;
+
+  if (totalKeys === 0) {
+    title.textContent = EMPTY_DEFAULT.title;
+    text.textContent = EMPTY_DEFAULT.text;
+  } else if (currentFilter === "active") {
+    title.textContent = "No active keys";
+    text.textContent = "All of your keys are revoked or expired.";
+  } else {
+    title.textContent = "No revoked keys";
+    text.textContent = "Keys you revoke will show up here.";
+  }
+}
 
 function fadeTable(visible) {
   if (tableBody) tableBody.style.opacity = visible ? "1" : "0";
@@ -194,15 +336,20 @@ function messageRowHtml(text, isError = false) {
 }
 
 function renderRows(rows) {
-  if (!rows.length) {
+  const visible = rows.filter((row) => matchesFilter(row, currentFilter));
+
+  updateFilterCounts();
+  keyCount.textContent = `${rows.length} ${rows.length === 1 ? "key" : "keys"}`;
+
+  if (!visible.length) {
     tableBody.innerHTML = "";
-    keyCount.textContent = "0 keys";
+    setEmptyCopy(rows.length);
     emptyState?.classList.remove("hidden");
     return;
   }
+
   emptyState?.classList.add("hidden");
-  keyCount.textContent = `${rows.length} ${rows.length === 1 ? "key" : "keys"}`;
-  tableBody.innerHTML = rows.map(rowHtml).join("");
+  tableBody.innerHTML = visible.map(rowHtml).join("");
 }
 
 async function loadKeys({ silent = false } = {}) {
@@ -253,6 +400,7 @@ async function loadKeys({ silent = false } = {}) {
     }
 
     keysCache = Array.isArray(data.data) ? data.data : [];
+    keysLoaded = true;
     renderRows(keysCache);
     fadeTable(true);
   } catch (err) {
@@ -303,6 +451,7 @@ form?.addEventListener("submit", async (e) => {
 
     labelInput.value = "";
     openKeyModal(data.api_key, name);
+    if (currentFilter !== "active") setFilter("active");
     loadKeys({ silent: true });
   } catch {
     showToast("Could not reach the server", true);

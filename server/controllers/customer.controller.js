@@ -42,7 +42,7 @@ async function newTicket(req, res) {
     );
 
     await tempConn.commit();
-    // await redisClient.del("")
+    await redisClient.del(`users:list:myTickets:${userId}`);
 
     return res.status(201).json({
       success: true,
@@ -79,6 +79,22 @@ async function newPresonalApiKey(req, res) {
         message: "Invalid Key Label",
       });
     }
+    tempConn = await dbConn.getConnection();
+    await tempConn.beginTransaction();
+
+    const [newKeyPossible] = await tempConn.query(
+      `
+      select count(*) as openKeys from api_key where cid = ? and isRevoked = 0;`,
+      [userId],
+    );
+
+    if (newKeyPossible[0]["openKeys"] >= 3) {
+      await tempConn.rollback();
+      return res.status(409).json({
+        success: false,
+        message: "Only 3 active keys allowed at a Time",
+      });
+    }
 
     const newApiKey = crypto.randomUUID() + crypto.randomUUID();
 
@@ -88,9 +104,6 @@ async function newPresonalApiKey(req, res) {
       newApiKey.substring(0, 5) +
       "..." +
       newApiKey.substring(newApiKey.length - 6, newApiKey.length - 1);
-
-    tempConn = await dbConn.getConnection();
-    await tempConn.beginTransaction();
 
     await tempConn.query(
       `
@@ -219,7 +232,7 @@ async function revokeMyKey(req, res) {
       await tempConn.rollback();
     }
 
-    console.log("CONTROLLER ERROR : customer.controller {revokeKey}");
+    console.log("CONTROLLER ERROR : customer.controller {revokeKey}", error);
 
     return res.status(500).json({
       success: false,
@@ -232,4 +245,34 @@ async function revokeMyKey(req, res) {
   }
 }
 
-export { newPresonalApiKey, getMyKeys, revokeMyKey, newTicket };
+async function getMyTickets(req, res) {
+  try {
+    const userId = req.user.userId;
+
+    const key = `users:list:myTickets:${userId}`;
+
+    const query = `select tid, ttitle, tpriority, tstatus, Timestampdiff(second, tcreationTime, now()) as opened 
+    from ticket where cid = ?`;
+
+    const params = [userId];
+
+    const ttl = 300;
+
+    const data = await cacheGetOrSet(key, query, params, ttl);
+
+    return res.status(200).json({
+      success: true,
+      message: `user ${userId} data fetched`,
+      data: data,
+    });
+  } catch (error) {
+    console.log("CONTROLLER ERROR : customer.controller {getMyTickets}", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
+    });
+  }
+}
+
+export { newPresonalApiKey, getMyKeys, revokeMyKey, newTicket, getMyTickets };
